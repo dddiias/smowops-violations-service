@@ -139,7 +139,7 @@ var migrationStatements = []string{
 	RETURNS TABLE(v_type VARCHAR, v_detected violation_detected_by, v_severity violation_severity) AS $$
 	BEGIN
 		RETURN QUERY SELECT
-			CASE status
+			CAST(CASE status
 				WHEN 'ROUTE_VIOLATION' THEN 'ROUTE_VIOLATION'
 				WHEN 'FOREIGN_AREA' THEN 'FOREIGN_AREA'
 				WHEN 'MISMATCH_PLATE' THEN 'MISMATCH_PLATE'
@@ -148,17 +148,15 @@ var migrationStatements = []string{
 				WHEN 'NO_ASSIGNMENT' THEN 'NO_AREA_WORK'
 				WHEN 'SUSPICIOUS_VOLUME' THEN 'OVER_CAPACITY'
 				WHEN 'OVER_CONTRACT_LIMIT' THEN 'OVER_CONTRACT_LIMIT'
-				ELSE 'SYSTEM'
-			END AS v_type,
-			CASE status
+				ELSE 'SYSTEM' END AS VARCHAR) AS v_type,
+			CAST(CASE status
 				WHEN 'MISMATCH_PLATE' THEN 'LPR'
 				WHEN 'ROUTE_VIOLATION' THEN 'GPS'
 				WHEN 'FOREIGN_AREA' THEN 'GPS'
 				WHEN 'SUSPICIOUS_VOLUME' THEN 'VOLUME'
 				WHEN 'OVER_CAPACITY' THEN 'VOLUME'
-				ELSE 'SYSTEM'
-			END AS v_detected,
-			CASE status
+				ELSE 'SYSTEM' END AS violation_detected_by) AS v_detected,
+			CAST(CASE status
 				WHEN 'ROUTE_VIOLATION' THEN 'HIGH'
 				WHEN 'FOREIGN_AREA' THEN 'HIGH'
 				WHEN 'OVER_CAPACITY' THEN 'HIGH'
@@ -166,8 +164,7 @@ var migrationStatements = []string{
 				WHEN 'MISMATCH_PLATE' THEN 'MEDIUM'
 				WHEN 'NO_ASSIGNMENT' THEN 'MEDIUM'
 				WHEN 'NO_AREA_WORK' THEN 'MEDIUM'
-				ELSE 'LOW'
-			END AS v_severity;
+				ELSE 'LOW' END AS violation_severity) AS v_severity;
 	END;
 	$$ LANGUAGE plpgsql;`,
 	`CREATE OR REPLACE FUNCTION trg_trips_set_violation_reason()
@@ -208,9 +205,9 @@ var migrationStatements = []string{
 		IF TG_OP = 'UPDATE' AND (OLD.status = NEW.status) THEN
 			RETURN NEW;
 		END IF;
-		SELECT v_type, v_detected, v_severity
+		SELECT result.v_type, result.v_detected, result.v_severity
 			INTO v_type, v_detected, v_severity
-		FROM map_trip_status_to_violation(NEW.status);
+		FROM map_trip_status_to_violation(NEW.status) AS result;
 
 		IF v_type IS NULL THEN
 			RETURN NEW;

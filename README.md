@@ -61,6 +61,40 @@ JWT_ACCESS_SECRET="secret" \
 go run ./cmd/violation-service
 ```
 
+### Local verification / demo data
+
+If you want to run the service standalone (without the rest of Snowops) use the helper scripts:
+
+```bash
+# assuming Postgres from deploy/ is running
+cd snowops-violations-service
+psql "postgres://postgres:postgres@localhost:5445/violations_db?sslmode=disable" -f scripts/demo_schema.sql
+psql "postgres://postgres:postgres@localhost:5445/violations_db?sslmode=disable" -f scripts/demo_seed.sql
+
+APP_ENV=development \
+JWT_ACCESS_SECRET="secret" \
+go run ./cmd/violation-service
+```
+
+The seed updates a demo trip status to `ROUTE_VIOLATION`, which fires the DB trigger and creates an `OPEN` violation automatically. Validate via:
+
+```bash
+psql "postgres://postgres:postgres@localhost:5445/violations_db?sslmode=disable" \
+  -c "SELECT id, trip_id, type, status FROM violations"
+```
+
+To call the HTTP API issue a JWT (e.g. through `snowops-auth-service`) for the Akimat user `00000000-0000-0000-0000-000000000011` and run:
+
+```bash
+curl -H "Authorization: Bearer <jwt>" http://localhost:7086/violations
+curl -X POST -H "Authorization: Bearer <jwt>" \
+     -H "Content-Type: application/json" \
+     -d '{"trip_id":"00000000-0000-0000-0000-000000000071","type":"FOREIGN_AREA","detected_by":"GPS","severity":"HIGH","description":"manual test"}' \
+     http://localhost:7086/violations
+```
+
+The first request lists the auto-created violation, the second creates a manual one (and instantly logs the status change). Contractor/driver tokens can exercise `/violations/:id/appeals`, `/appeals`, `/appeals/:id/comments`, while KGU/Akimat tokens go through `/appeals/:id/actions` to test the lifecycle.
+
 ### Configuration
 
 | Env var | Description | Default |
