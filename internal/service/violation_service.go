@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -188,6 +189,21 @@ func (s *ViolationService) CreateManual(ctx context.Context, principal model.Pri
 		return nil, err
 	}
 
+	if strings.TrimSpace(input.Description) != "" {
+		if err := s.violationRepo.UpdateTripViolationReason(ctx, trip.ID, input.Description); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := s.violationRepo.LogStatusChange(ctx, &model.ViolationStatusLog{
+		ViolationID: violation.ID,
+		NewStatus:   model.ViolationStatusOpen,
+		Note:        "manual creation",
+		ChangedBy:   &principal.UserID,
+	}); err != nil {
+		return nil, err
+	}
+
 	created, err := s.violationRepo.GetByID(ctx, scope, violation.ID)
 	if err != nil {
 		return nil, err
@@ -224,6 +240,17 @@ func (s *ViolationService) UpdateStatus(ctx context.Context, principal model.Pri
 	}
 
 	if err := s.violationRepo.UpdateStatus(ctx, violation.ID, target, description); err != nil {
+		return err
+	}
+
+	prev := violation.Status
+	if err := s.violationRepo.LogStatusChange(ctx, &model.ViolationStatusLog{
+		ViolationID: violation.ID,
+		OldStatus:   &prev,
+		NewStatus:   target,
+		Note:        description,
+		ChangedBy:   &principal.UserID,
+	}); err != nil {
 		return err
 	}
 

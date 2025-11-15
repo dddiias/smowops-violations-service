@@ -145,6 +145,17 @@ func (r *ViolationRepository) UpdateStatus(ctx context.Context, violationID uuid
 		}).Error
 }
 
+func (r *ViolationRepository) LogStatusChange(ctx context.Context, logEntry *model.ViolationStatusLog) error {
+	return r.db.WithContext(ctx).Create(logEntry).Error
+}
+
+func (r *ViolationRepository) UpdateTripViolationReason(ctx context.Context, tripID uuid.UUID, reason string) error {
+	return r.db.WithContext(ctx).
+		Model(&model.Trip{}).
+		Where("id = ?", tripID).
+		Update("violation_reason", reason).Error
+}
+
 func (r *ViolationRepository) GetTrip(ctx context.Context, tripID uuid.UUID) (*model.Trip, error) {
 	var trip model.Trip
 	if err := r.db.WithContext(ctx).

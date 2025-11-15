@@ -92,6 +92,26 @@ var migrationStatements = []string{
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);`,
 	`CREATE INDEX IF NOT EXISTS idx_violation_comments_appeal_id ON violation_appeal_comments (appeal_id);`,
+	`CREATE TABLE IF NOT EXISTS violation_status_log (
+		id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+		violation_id UUID NOT NULL REFERENCES violations(id) ON DELETE CASCADE,
+		old_status violation_status,
+		new_status violation_status NOT NULL,
+		note TEXT,
+		changed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_violation_status_log_violation_id ON violation_status_log (violation_id);`,
+	`CREATE TABLE IF NOT EXISTS appeal_status_log (
+		id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+		appeal_id UUID NOT NULL REFERENCES violation_appeals(id) ON DELETE CASCADE,
+		old_status appeal_status,
+		new_status appeal_status NOT NULL,
+		note TEXT,
+		changed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);`,
+	`CREATE INDEX IF NOT EXISTS idx_appeal_status_log_appeal_id ON appeal_status_log (appeal_id);`,
 	`CREATE OR REPLACE FUNCTION set_row_updated_at()
 	RETURNS TRIGGER AS $$
 	BEGIN
@@ -112,6 +132,119 @@ var migrationStatements = []string{
 				BEFORE UPDATE ON violation_appeals
 				FOR EACH ROW
 				EXECUTE PROCEDURE set_row_updated_at();
+		END IF;
+	END
+	$$;`,
+	`CREATE OR REPLACE FUNCTION map_trip_status_to_violation(status TEXT)
+	RETURNS TABLE(v_type VARCHAR, v_detected violation_detected_by, v_severity violation_severity) AS $$
+	BEGIN
+		RETURN QUERY SELECT
+			CASE status
+				WHEN 'ROUTE_VIOLATION' THEN 'ROUTE_VIOLATION'
+				WHEN 'FOREIGN_AREA' THEN 'FOREIGN_AREA'
+				WHEN 'MISMATCH_PLATE' THEN 'MISMATCH_PLATE'
+				WHEN 'OVER_CAPACITY' THEN 'OVER_CAPACITY'
+				WHEN 'NO_AREA_WORK' THEN 'NO_AREA_WORK'
+				WHEN 'NO_ASSIGNMENT' THEN 'NO_AREA_WORK'
+				WHEN 'SUSPICIOUS_VOLUME' THEN 'OVER_CAPACITY'
+				WHEN 'OVER_CONTRACT_LIMIT' THEN 'OVER_CONTRACT_LIMIT'
+				ELSE 'SYSTEM'
+			END AS v_type,
+			CASE status
+				WHEN 'MISMATCH_PLATE' THEN 'LPR'
+				WHEN 'ROUTE_VIOLATION' THEN 'GPS'
+				WHEN 'FOREIGN_AREA' THEN 'GPS'
+				WHEN 'SUSPICIOUS_VOLUME' THEN 'VOLUME'
+				WHEN 'OVER_CAPACITY' THEN 'VOLUME'
+				ELSE 'SYSTEM'
+			END AS v_detected,
+			CASE status
+				WHEN 'ROUTE_VIOLATION' THEN 'HIGH'
+				WHEN 'FOREIGN_AREA' THEN 'HIGH'
+				WHEN 'OVER_CAPACITY' THEN 'HIGH'
+				WHEN 'SUSPICIOUS_VOLUME' THEN 'MEDIUM'
+				WHEN 'MISMATCH_PLATE' THEN 'MEDIUM'
+				WHEN 'NO_ASSIGNMENT' THEN 'MEDIUM'
+				WHEN 'NO_AREA_WORK' THEN 'MEDIUM'
+				ELSE 'LOW'
+			END AS v_severity;
+	END;
+	$$ LANGUAGE plpgsql;`,
+	`CREATE OR REPLACE FUNCTION trg_trips_set_violation_reason()
+	RETURNS TRIGGER AS $$
+	BEGIN
+		IF NEW.status <> 'OK'
+			AND (OLD.status IS NULL OR OLD.status = 'OK')
+			AND (NEW.violation_reason IS NULL OR NEW.violation_reason = '') THEN
+			NEW.violation_reason := CONCAT('Auto violation: ', NEW.status);
+		END IF;
+		RETURN NEW;
+	END;
+	$$ LANGUAGE plpgsql;`,
+	`DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_trips_set_violation_reason') THEN
+			CREATE TRIGGER trg_trips_set_violation_reason
+				BEFORE UPDATE OF status ON trips
+				FOR EACH ROW
+				WHEN (NEW.status <> 'OK' AND (OLD.status IS NULL OR OLD.status = 'OK'))
+				EXECUTE PROCEDURE trg_trips_set_violation_reason();
+		END IF;
+	END
+	$$;`,
+	`CREATE OR REPLACE FUNCTION trg_trips_auto_violation()
+	RETURNS TRIGGER AS $$
+	DECLARE
+		v_type VARCHAR;
+		v_detected violation_detected_by;
+		v_severity violation_severity;
+		v_description TEXT;
+		v_existing UUID;
+		v_new_id UUID;
+	BEGIN
+		IF NEW.status = 'OK' THEN
+			RETURN NEW;
+		END IF;
+		IF TG_OP = 'UPDATE' AND (OLD.status = NEW.status) THEN
+			RETURN NEW;
+		END IF;
+		SELECT v_type, v_detected, v_severity
+			INTO v_type, v_detected, v_severity
+		FROM map_trip_status_to_violation(NEW.status);
+
+		IF v_type IS NULL THEN
+			RETURN NEW;
+		END IF;
+
+		v_description := COALESCE(NEW.violation_reason, CONCAT('Auto violation: ', NEW.status));
+
+		SELECT id INTO v_existing
+		FROM violations
+		WHERE trip_id = NEW.id AND type = v_type AND status = 'OPEN'
+		LIMIT 1;
+
+		IF v_existing IS NOT NULL THEN
+			RETURN NEW;
+		END IF;
+
+		INSERT INTO violations (trip_id, type, detected_by, severity, status, description, created_at, updated_at)
+		VALUES (NEW.id, v_type, v_detected, v_severity, 'OPEN', v_description, NOW(), NOW())
+		RETURNING id INTO v_new_id;
+
+		INSERT INTO violation_status_log (violation_id, old_status, new_status, note, changed_by, created_at)
+		VALUES (v_new_id, NULL, 'OPEN', 'auto from trip status', NULL, NOW());
+
+		RETURN NEW;
+	END;
+	$$ LANGUAGE plpgsql;`,
+	`DO $$
+	BEGIN
+		IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_trips_auto_violation') THEN
+			CREATE TRIGGER trg_trips_auto_violation
+				AFTER UPDATE OF status ON trips
+				FOR EACH ROW
+				WHEN (NEW.status <> 'OK')
+				EXECUTE PROCEDURE trg_trips_auto_violation();
 		END IF;
 	END
 	$$;`,

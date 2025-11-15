@@ -14,6 +14,7 @@ Snowops Violations Service implements EPIC 7 requirements: tracking trip viola
   - `TOO_ADMIN`: sees only camera-related violations (detected_by = LPR/VOLUME/SYSTEM with CAMERA_ERROR appeals), can comment for diagnostics.
 - **Lifecycle enforcement** – one active appeal per violation; transitions follow PDF spec (SUBMITTED→UNDER_REVIEW→NEED_INFO/APPROVED/REJECTED→CLOSED). Approvals cancel violations, rejections fix them.
 - **Attachment guardrails** – configurable max attachments per action, strict enum for file types (IMAGE/VIDEO/DOC).
+- **Automation + audit** – DB triggers create violations automatically when `trips.status != 'OK'`, populate `trip.violation_reason`, and log every violation/appeal status change in dedicated history tables.
 
 ## Database objects
 

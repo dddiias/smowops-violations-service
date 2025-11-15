@@ -184,6 +184,15 @@ func (s *AppealService) Create(ctx context.Context, principal model.Principal, v
 		return nil, err
 	}
 
+	if err := s.appealRepo.LogStatusChange(ctx, &model.AppealStatusLog{
+		AppealID:  appeal.ID,
+		NewStatus: model.AppealStatusSubmitted,
+		Note:      reasonText,
+		ChangedBy: &principal.UserID,
+	}); err != nil {
+		return nil, err
+	}
+
 	created, err := s.appealRepo.GetByID(ctx, scope, appeal.ID)
 	if err != nil {
 		return nil, err
@@ -235,7 +244,18 @@ func (s *AppealService) AddComment(ctx context.Context, principal model.Principa
 	}
 
 	if appeal.Status == model.AppealStatusNeedInfo && (principal.IsDriver() || principal.IsContractor()) {
+		oldStatus := appeal.Status
 		if err := s.appealRepo.UpdateStatus(ctx, appeal.ID, model.AppealStatusUnderReview, nil); err != nil {
+			return err
+		}
+		appeal.Status = model.AppealStatusUnderReview
+		if err := s.appealRepo.LogStatusChange(ctx, &model.AppealStatusLog{
+			AppealID:  appeal.ID,
+			OldStatus: &oldStatus,
+			NewStatus: appeal.Status,
+			Note:      "answer received",
+			ChangedBy: &principal.UserID,
+		}); err != nil {
 			return err
 		}
 	}
@@ -276,7 +296,18 @@ func (s *AppealService) Act(ctx context.Context, principal model.Principal, appe
 		if appeal.Status != model.AppealStatusSubmitted && appeal.Status != model.AppealStatusNeedInfo {
 			return ErrInvalidStatus
 		}
-		return s.appealRepo.UpdateStatus(ctx, appeal.ID, model.AppealStatusUnderReview, nil)
+		oldStatus := appeal.Status
+		if err := s.appealRepo.UpdateStatus(ctx, appeal.ID, model.AppealStatusUnderReview, nil); err != nil {
+			return err
+		}
+		appeal.Status = model.AppealStatusUnderReview
+		return s.appealRepo.LogStatusChange(ctx, &model.AppealStatusLog{
+			AppealID:  appeal.ID,
+			OldStatus: &oldStatus,
+			NewStatus: appeal.Status,
+			Note:      "taken into review",
+			ChangedBy: &principal.UserID,
+		})
 	case AppealActionNeedInfo:
 		if appeal.Status != model.AppealStatusUnderReview {
 			return ErrInvalidStatus
@@ -284,7 +315,18 @@ func (s *AppealService) Act(ctx context.Context, principal model.Principal, appe
 		if strings.TrimSpace(message) == "" {
 			return ErrInvalidInput
 		}
+		oldStatus := appeal.Status
 		if err := s.appealRepo.UpdateStatus(ctx, appeal.ID, model.AppealStatusNeedInfo, nil); err != nil {
+			return err
+		}
+		appeal.Status = model.AppealStatusNeedInfo
+		if err := s.appealRepo.LogStatusChange(ctx, &model.AppealStatusLog{
+			AppealID:  appeal.ID,
+			OldStatus: &oldStatus,
+			NewStatus: appeal.Status,
+			Note:      "requesting additional info",
+			ChangedBy: &principal.UserID,
+		}); err != nil {
 			return err
 		}
 		return s.AddComment(ctx, principal, appeal.ID, message, nil)
@@ -292,23 +334,78 @@ func (s *AppealService) Act(ctx context.Context, principal model.Principal, appe
 		if appeal.Status != model.AppealStatusUnderReview && appeal.Status != model.AppealStatusNeedInfo {
 			return ErrInvalidStatus
 		}
+		oldStatus := appeal.Status
 		if err := s.appealRepo.UpdateStatus(ctx, appeal.ID, model.AppealStatusApproved, &principal.UserID); err != nil {
 			return err
 		}
-		return s.violationRepo.UpdateStatus(ctx, appeal.ViolationID, model.ViolationStatusCanceled, "canceled via appeal approval")
+		appeal.Status = model.AppealStatusApproved
+		if err := s.appealRepo.LogStatusChange(ctx, &model.AppealStatusLog{
+			AppealID:  appeal.ID,
+			OldStatus: &oldStatus,
+			NewStatus: appeal.Status,
+			Note:      "appeal approved",
+			ChangedBy: &principal.UserID,
+		}); err != nil {
+			return err
+		}
+		prevViolationStatus := appeal.Violation.Status
+		if err := s.violationRepo.UpdateStatus(ctx, appeal.ViolationID, model.ViolationStatusCanceled, "canceled via appeal approval"); err != nil {
+			return err
+		}
+		appeal.Violation.Status = model.ViolationStatusCanceled
+		return s.violationRepo.LogStatusChange(ctx, &model.ViolationStatusLog{
+			ViolationID: appeal.ViolationID,
+			OldStatus:   &prevViolationStatus,
+			NewStatus:   model.ViolationStatusCanceled,
+			Note:        "canceled via appeal approval",
+			ChangedBy:   &principal.UserID,
+		})
 	case AppealActionReject:
 		if appeal.Status != model.AppealStatusUnderReview && appeal.Status != model.AppealStatusNeedInfo {
 			return ErrInvalidStatus
 		}
+		oldStatus := appeal.Status
 		if err := s.appealRepo.UpdateStatus(ctx, appeal.ID, model.AppealStatusRejected, &principal.UserID); err != nil {
 			return err
 		}
-		return s.violationRepo.UpdateStatus(ctx, appeal.ViolationID, model.ViolationStatusFixed, "violation confirmed")
+		appeal.Status = model.AppealStatusRejected
+		if err := s.appealRepo.LogStatusChange(ctx, &model.AppealStatusLog{
+			AppealID:  appeal.ID,
+			OldStatus: &oldStatus,
+			NewStatus: appeal.Status,
+			Note:      "appeal rejected",
+			ChangedBy: &principal.UserID,
+		}); err != nil {
+			return err
+		}
+		prevViolationStatus := appeal.Violation.Status
+		if err := s.violationRepo.UpdateStatus(ctx, appeal.ViolationID, model.ViolationStatusFixed, "violation confirmed"); err != nil {
+			return err
+		}
+		appeal.Violation.Status = model.ViolationStatusFixed
+		return s.violationRepo.LogStatusChange(ctx, &model.ViolationStatusLog{
+			ViolationID: appeal.ViolationID,
+			OldStatus:   &prevViolationStatus,
+			NewStatus:   model.ViolationStatusFixed,
+			Note:        "violation confirmed via appeal rejection",
+			ChangedBy:   &principal.UserID,
+		})
 	case AppealActionClose:
 		if appeal.Status != model.AppealStatusApproved && appeal.Status != model.AppealStatusRejected {
 			return ErrInvalidStatus
 		}
-		return s.appealRepo.UpdateStatus(ctx, appeal.ID, model.AppealStatusClosed, &principal.UserID)
+		oldStatus := appeal.Status
+		if err := s.appealRepo.UpdateStatus(ctx, appeal.ID, model.AppealStatusClosed, &principal.UserID); err != nil {
+			return err
+		}
+		appeal.Status = model.AppealStatusClosed
+		return s.appealRepo.LogStatusChange(ctx, &model.AppealStatusLog{
+			AppealID:  appeal.ID,
+			OldStatus: &oldStatus,
+			NewStatus: appeal.Status,
+			Note:      "appeal closed",
+			ChangedBy: &principal.UserID,
+		})
 	default:
 		return ErrInvalidInput
 	}

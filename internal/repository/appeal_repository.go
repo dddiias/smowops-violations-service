@@ -261,3 +261,7 @@ func (r *AppealRepository) SummariesByViolationIDs(ctx context.Context, ids []uu
 
 	return result, nil
 }
+
+func (r *AppealRepository) LogStatusChange(ctx context.Context, logEntry *model.AppealStatusLog) error {
+	return r.db.WithContext(ctx).Create(logEntry).Error
+}
